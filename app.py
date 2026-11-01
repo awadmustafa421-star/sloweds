@@ -1,4 +1,5 @@
 import io
+import wave
 import numpy as np
 import streamlit as st
 from pedalboard import (Pedalboard, Reverb, Delay, LowShelfFilter, HighShelfFilter,
@@ -8,14 +9,14 @@ from pedalboard.io import AudioFile
 st.set_page_config(page_title="Slowed + Reverb Studio", layout="wide")
 st.title("Slowed + Reverb Studio")
 
-# ---------- Reverb presets: (room_size, damping, wet, dry, width) ----------
+# ---------- Reverb presets: (room_size, damping, wet, dry) ----------
 PRESETS = {
-    "Small room":   (0.30, 0.50, 0.20, 0.90, 1.0),
-    "Hall":         (0.70, 0.40, 0.30, 0.80, 1.0),
-    "Cathedral":    (0.95, 0.30, 0.40, 0.70, 1.0),
-    "Dreamy cloud": (0.90, 0.60, 0.50, 0.60, 1.0),
-    "Infinite space": (1.00, 0.20, 0.55, 0.55, 1.0),
-    "Custom":       (0.70, 0.50, 0.30, 0.80, 1.0),
+    "Small room":     (0.30, 0.50, 0.20, 0.90),
+    "Hall":           (0.70, 0.40, 0.30, 0.80),
+    "Cathedral":      (0.95, 0.30, 0.40, 0.70),
+    "Dreamy cloud":   (0.90, 0.60, 0.50, 0.60),
+    "Infinite space": (1.00, 0.20, 0.55, 0.55),
+    "Custom":         (0.70, 0.50, 0.30, 0.80),
 }
 
 file = st.file_uploader("Upload a song", type=["mp3", "wav", "flac", "ogg"])
@@ -74,11 +75,24 @@ def apply_width(audio, w):
 
 def apply_pan(audio, sr, cycle, depth):
     t = np.arange(audio.shape[1]) / sr
-    pos = np.sin(2 * np.pi * t / cycle) * depth      # -depth .. +depth
+    pos = np.sin(2 * np.pi * t / cycle) * depth
     left = np.sqrt((1 - pos) / 2)
     right = np.sqrt((1 + pos) / 2)
     mono_gain = np.sqrt(2) / 2
     return np.stack([audio[0] * left / mono_gain, audio[1] * right / mono_gain])
+
+
+def to_wav_bytes(audio, sample_rate):
+    """audio shape: (2, samples), floats between -1 and 1"""
+    audio = np.clip(audio, -1.0, 1.0)
+    pcm = (audio.T * 32767).astype(np.int16)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(2)
+        w.setsampwidth(2)
+        w.setframerate(int(sample_rate))
+        w.writeframes(pcm.tobytes())
+    return buf.getvalue()
 
 
 if file and st.button("Make it", type="primary"):
@@ -97,10 +111,9 @@ if file and st.button("Make it", type="primary"):
         else:
             out_sr = int(sr * speed)
 
-        audio = np.pad(audio, ((0, 0), (0, sr * 4)))   # room for reverb tail
+        audio = np.pad(audio, ((0, 0), (0, sr * 4)))  # room for reverb tail
 
-        fx = []
-        fx.append(HighpassFilter(25))
+        fx = [HighpassFilter(25)]
         if bass != 0:
             fx.append(LowShelfFilter(cutoff_frequency_hz=150, gain_db=bass))
         if treble != 0:
@@ -120,10 +133,11 @@ if file and st.button("Make it", type="primary"):
 
         out = Pedalboard([Limiter(threshold_db=-1.0)])(out.astype(np.float32), sr)
 
-        buf = io.BytesIO()
-        with AudioFile(buf, "w", out_sr, 2, format="wav") as f:
-            f.write(out)
+        # keep the result so it survives the page refresh when you click Download
+        st.session_state["result"] = to_wav_bytes(out, out_sr)
 
+if "result" in st.session_state:
     st.success("Done!")
-    st.audio(buf.getvalue(), format="audio/wav")
-    st.download_button("Download WAV", buf.getvalue(), "slowed_reverb.wav", "audio/wav")
+    st.audio(st.session_state["result"], format="audio/wav")
+    st.download_button("Download WAV", st.session_state["result"],
+                       "slowed_reverb.wav", "audio/wav")
